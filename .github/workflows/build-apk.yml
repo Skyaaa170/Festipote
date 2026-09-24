@@ -1,0 +1,99 @@
+name: Compiler l'APK Festipote
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trouver le projet
+        run: |
+          if [ -f festipote.zip ]; then unzip -oq festipote.zip; fi
+          if [ -f festipote/pubspec.yaml ]; then
+            echo "APP_DIR=festipote" >> "$GITHUB_ENV"
+          elif [ -f pubspec.yaml ]; then
+            echo "APP_DIR=." >> "$GITHUB_ENV"
+          else
+            echo "::error::Projet introuvable : envoie festipote.zip Ã  la racine du dÃ©pÃ´t."
+            exit 1
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: GÃ©nÃ©rer la partie Android
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          flutter create --platforms=android --org fr.festipote --project-name festipote .
+          rm -f test/widget_test.dart
+
+      - name: Ajouter les permissions et rÃ©glages Android
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          python3 - <<'EOF'
+          import pathlib
+
+          # Permissions Bluetooth, camÃ©ra, notifications
+          m = pathlib.Path('android/app/src/main/AndroidManifest.xml')
+          s = m.read_text()
+          perms = '''<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+              <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+              <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+              '''
+          if 'BLUETOOTH_SCAN' not in s:
+              s = s.replace('<application', perms + '<application', 1)
+              s = s.replace('android:label="festipote"', 'android:label="Festipote"', 1)
+              m.write_text(s)
+
+          # Desugaring demandÃ© par flutter_local_notifications
+          kts = pathlib.Path('android/app/build.gradle.kts')
+          groovy = pathlib.Path('android/app/build.gradle')
+          if kts.exists():
+              g, flag, dep = kts, 'isCoreLibraryDesugaringEnabled = true', 'coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
+          else:
+              g, flag, dep = groovy, 'coreLibraryDesugaringEnabled true', "coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'"
+          s = g.read_text()
+          if 'DesugaringEnabled' not in s:
+              if 'compileOptions {' in s:
+                  s = s.replace('compileOptions {', 'compileOptions {\n        ' + flag, 1)
+              else:
+                  s = s.replace('android {', 'android {\n    compileOptions {\n        ' + flag + '\n    }', 1)
+              s += '\ndependencies {\n    ' + dep + '\n}\n'
+              g.write_text(s)
+          print('RÃ©glages Android OK')
+          EOF
+
+      - name: Compiler l'APK
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          flutter pub get
+          flutter build apk --release
+          cp build/app/outputs/flutter-apk/app-release.apk festipote.apk
+
+      - name: Publier l'APK dans les Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Festipote (build ${{ github.run_number }})
+          files: ${{ env.APP_DIR }}/festipote.apk
