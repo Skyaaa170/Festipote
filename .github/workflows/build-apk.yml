@@ -41,48 +41,9 @@ jobs:
           flutter create --platforms=android --org fr.festipote --project-name festipote .
           rm -f test/widget_test.dart
 
-      - name: Ajouter les permissions et rÃ©glages Android
+      - name: RÃ©glages Android
         working-directory: ${{ env.APP_DIR }}
-        run: |
-          python3 - <<'EOF'
-          import pathlib
-
-          # Permissions Bluetooth, camÃ©ra, notifications
-          m = pathlib.Path('android/app/src/main/AndroidManifest.xml')
-          s = m.read_text()
-          perms = '''<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
-              <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
-              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-              <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
-              <uses-permission android:name="android.permission.CAMERA" />
-              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-              <uses-permission android:name="android.permission.VIBRATE" />
-              <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
-              '''
-          if 'BLUETOOTH_SCAN' not in s:
-              s = s.replace('<application', perms + '<application', 1)
-              s = s.replace('android:label="festipote"', 'android:label="Festipote"', 1)
-              m.write_text(s)
-
-          # Desugaring demandÃ© par flutter_local_notifications
-          kts = pathlib.Path('android/app/build.gradle.kts')
-          groovy = pathlib.Path('android/app/build.gradle')
-          if kts.exists():
-              g, flag, dep = kts, 'isCoreLibraryDesugaringEnabled = true', 'coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
-          else:
-              g, flag, dep = groovy, 'coreLibraryDesugaringEnabled true', "coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'"
-          s = g.read_text()
-          if 'DesugaringEnabled' not in s:
-              if 'compileOptions {' in s:
-                  s = s.replace('compileOptions {', 'compileOptions {\n        ' + flag, 1)
-              else:
-                  s = s.replace('android {', 'android {\n    compileOptions {\n        ' + flag + '\n    }', 1)
-              s += '\ndependencies {\n    ' + dep + '\n}\n'
-              g.write_text(s)
-          print('RÃ©glages Android OK')
-          EOF
+        run: python3 ci/patch_android.py
 
       - name: TÃ©lÃ©charger les paquets
         working-directory: ${{ env.APP_DIR }}
@@ -90,34 +51,7 @@ jobs:
 
       - name: Mettre les paquets au SDK Android 36
         working-directory: ${{ env.APP_DIR }}
-        run: |
-          python3 - <<'EOF'
-          import os, pathlib, re
-          SDK = 36
-          pat = re.compile(r'(compileSdk(?:Version)?\s*(?:=\s*|\(\s*)?)(\d+)')
-          def bump(m):
-              return m.group(1) + str(max(int(m.group(2)), SDK))
-
-          # Paquets tÃ©lÃ©chargÃ©s : on remonte leur compileSdk Ã  36 minimum
-          cache = pathlib.Path(os.environ.get('PUB_CACHE') or pathlib.Path.home() / '.pub-cache')
-          files = list(cache.glob('hosted/*/*/android/build.gradle')) + list(cache.glob('hosted/*/*/android/build.gradle.kts'))
-          for f in files:
-              s = f.read_text()
-              n = pat.sub(bump, s)
-              if n != s:
-                  f.write_text(n)
-                  print('compileSdk relevÃ© :', f.parent.parent.name)
-
-          # Appli : jamais en dessous de 36
-          app = next(p for p in [pathlib.Path('android/app/build.gradle.kts'), pathlib.Path('android/app/build.gradle')] if p.exists())
-          s = app.read_text()
-          if app.suffix == '.kts':
-              s = s.replace('compileSdk = flutter.compileSdkVersion', f'compileSdk = maxOf(flutter.compileSdkVersion, {SDK})')
-          else:
-              s = re.sub(r'compileSdk(?:Version)? flutter\.compileSdkVersion', f'compileSdk Math.max(flutter.compileSdkVersion, {SDK})', s)
-          app.write_text(s)
-          print('Appli :', [l.strip() for l in s.splitlines() if 'compileSdk' in l])
-          EOF
+        run: python3 ci/bump_plugins_sdk.py
 
       - name: VÃ©rifier le code Dart
         working-directory: ${{ env.APP_DIR }}
