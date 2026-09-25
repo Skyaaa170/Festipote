@@ -84,23 +84,49 @@ jobs:
           print('RÃ©glages Android OK')
           EOF
 
+      - name: TÃ©lÃ©charger les paquets
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter pub get
+
+      - name: Mettre les paquets au SDK Android 36
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          python3 - <<'EOF'
+          import os, pathlib, re
+          SDK = 36
+          pat = re.compile(r'(compileSdk(?:Version)?\s*(?:=\s*|\(\s*)?)(\d+)')
+          def bump(m):
+              return m.group(1) + str(max(int(m.group(2)), SDK))
+
+          # Paquets tÃ©lÃ©chargÃ©s : on remonte leur compileSdk Ã  36 minimum
+          cache = pathlib.Path(os.environ.get('PUB_CACHE') or pathlib.Path.home() / '.pub-cache')
+          files = list(cache.glob('hosted/*/*/android/build.gradle')) + list(cache.glob('hosted/*/*/android/build.gradle.kts'))
+          for f in files:
+              s = f.read_text()
+              n = pat.sub(bump, s)
+              if n != s:
+                  f.write_text(n)
+                  print('compileSdk relevÃ© :', f.parent.parent.name)
+
+          # Appli : jamais en dessous de 36
+          app = next(p for p in [pathlib.Path('android/app/build.gradle.kts'), pathlib.Path('android/app/build.gradle')] if p.exists())
+          s = app.read_text()
+          if app.suffix == '.kts':
+              s = s.replace('compileSdk = flutter.compileSdkVersion', f'compileSdk = maxOf(flutter.compileSdkVersion, {SDK})')
+          else:
+              s = re.sub(r'compileSdk(?:Version)? flutter\.compileSdkVersion', f'compileSdk Math.max(flutter.compileSdkVersion, {SDK})', s)
+          app.write_text(s)
+          print('Appli :', [l.strip() for l in s.splitlines() if 'compileSdk' in l])
+          EOF
+
+      - name: VÃ©rifier le code Dart
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings || echo "::warning::Erreurs dans le code Dart, voir cette Ã©tape"
+
       - name: Compiler l'APK
         working-directory: ${{ env.APP_DIR }}
         run: |
-          set -o pipefail
-          flutter pub get
-          if ! flutter build apk --release 2>&1 | tee build.log; then
-            # Si un paquet exige un SDK Android plus rÃ©cent, on le rÃ¨gle et on relance
-            REQ=$(grep -oE '(compile against version|compiles against Android SDK) [0-9]+' build.log | grep -oE '[0-9]+$' | sort -n | tail -1)
-            if [ -z "$REQ" ]; then
-              echo "::error::Erreur de compilation, voir le journal ci-dessus."
-              exit 1
-            fi
-            echo "::notice::Passage Ã  compileSdk $REQ puis nouvel essai"
-            sed -i -E "s/compileSdk(Version)?( =)? flutter\.compileSdkVersion/compileSdk = $REQ/" android/app/build.gradle*
-            grep -n "compileSdk" android/app/build.gradle*
-            flutter build apk --release
-          fi
+          flutter build apk --release
           cp build/app/outputs/flutter-apk/app-release.apk festipote.apk
 
       - name: Publier l'APK dans les Releases
